@@ -1,0 +1,145 @@
+{
+  "name": "stm32-debug-helper",
+  "displayName": "STM32 Debug Helper",
+  "description": "A VSCode extension for STM32 debugging",
+  "version": "0.0.1",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "stm32-debug-helper.helloWorld",
+        "title": "Hello World"
+      },
+      {
+        "command": "stm32-debug-helper.startServer",
+        "title": "STM32 Debug: Start Server"
+      },
+      {
+        "command": "stm32-debug-helper.stopServer",
+        "title": "STM32 Debug: Stop Server"
+      },
+      {
+        "command": "stm32-debug-helper.refreshVariables",
+        "title": "STM32 Debug: Refresh Variables",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "stm32-debug-helper.addVariable",
+        "title": "STM32 Debug: Add Variable",
+        "icon": "$(add)"
+      },
+      {
+        "command": "stm32-debug-helper.editVariable",
+        "title": "Edit Variable Value"
+      },
+      {
+        "command": "stm32-debug-helper.renameVariable",
+        "title": "Rename Variable Expression"
+      },
+      {
+        "command": "stm32-debug-helper.deleteVariable",
+        "title": "Delete Variable"
+      },
+      {
+        "command": "stm32-debug-helper.showBottomPanel",
+        "title": "STM32 Debug: Show Bottom Panel"
+      }
+    ],
+    "viewsContainers": {
+      "panel": [
+        {
+          "id": "stm32-debug-panel",
+          "title": "STM32 Variables",
+          "icon": "resources/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "stm32-debug-panel": [
+        {
+          "id": "stm32-debug-variables-panel",
+          "name": "Variables"
+        }
+      ]
+    },
+    "menus": {
+      "view/title": [
+        {
+          "command": "stm32-debug-helper.addVariable",
+          "when": "view == stm32-debug-variables-panel",
+          "group": "navigation"
+        },
+        {
+          "command": "stm32-debug-helper.refreshVariables",
+          "when": "view == stm32-debug-variables-panel",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "stm32-debug-helper.editVariable",
+          "when": "view == stm32-debug-variables-panel && (viewItem == variable || viewItem == rootVariable)",
+          "group": "inline"
+        },
+        {
+          "command": "stm32-debug-helper.renameVariable",
+          "when": "view == stm32-debug-variables-panel && viewItem =~ /^rootVariable/",
+          "group": "navigation"
+        },
+        {
+          "command": "stm32-debug-helper.deleteVariable",
+          "when": "view == stm32-debug-variables-panel && viewItem =~ /^rootVariable/",
+          "group": "navigation"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "STM32 Debug Helper",
+      "properties": {
+        "stm32DebugHelper.pythonPath": {
+          "type": "string",
+          "default": "python3",
+          "description": "Path to Python interpreter"
+        },
+        "stm32DebugHelper.elfPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to ELF file"
+        },
+        "stm32DebugHelper.openocdHost": {
+          "type": "string",
+          "default": "127.0.0.1",
+          "description": "OpenOCD TCL RPC host"
+        },
+        "stm32DebugHelper.openocdPort": {
+          "type": "number",
+          "default": 50001,
+          "description": "OpenOCD TCL RPC port"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile && node copy-server.js",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "pretest": "npm run compile && npm run lint",
+    "lint": "eslint src --ext ts",
+    "package:server": "python3 build_server.py"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "@types/vscode": "^1.85.0",
+    "@typescript-eslint/eslint-plugin": "^6.13.0",
+    "@typescript-eslint/parser": "^6.13.0",
+    "eslint": "^8.54.0",
+    "typescript": "^5.3.2"
+  }
+}
