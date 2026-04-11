@@ -1,8 +1,19 @@
 {
   "name": "stm32-debug-helper",
   "displayName": "STM32 Debug Helper",
-  "description": "A VSCode extension for STM32 debugging",
-  "version": "0.0.1",
+  "description": "A VSCode extension for STM32 debugging. STM32调试插件，可以实现实时显示和修改全局变量。",
+  "version": "1.0.0",
+  "publisher": "RCIA-ZZE",
+  "author": "ZEALHT001 <zealht@qq.com>",
+  "icon": "resources/icon.png",
+  "keywords": ["STM32", "CMake", "Embedded", "Debug", "OpenOCD"],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ZEALHT001/stm32-debug-helper.git"
+  },
+  "bugs": {
+    "url": "https://github.com/ZEALHT001/stm32-debug-helper/issues"
+  },
   "engines": {
     "vscode": "^1.85.0"
   },
@@ -13,10 +24,6 @@
   "main": "./out/extension.js",
   "contributes": {
     "commands": [
-      {
-        "command": "stm32-debug-helper.helloWorld",
-        "title": "Hello World"
-      },
       {
         "command": "stm32-debug-helper.startServer",
         "title": "STM32 Debug: Start Server"

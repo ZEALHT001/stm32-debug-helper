@@ -3,8 +3,10 @@ import json
 import socket
 import struct
 import threading
+import math
 from pathlib import Path
 from typing import Any
+import re
 
 from elftools.elf.elffile import ELFFile
 
@@ -27,7 +29,7 @@ class VariableNode:
             "typeName": self.type_name,
             "size": self.size,
             "hasChildren": bool(self.children),
-            "children": sorted(self.children.keys()),
+            "children": list(self.children.keys()),
         }
 
 
@@ -85,29 +87,98 @@ class TclRpcClient:
                 if next_node.addr != start_node.addr + count * 4:
                     break
                 count += 1
+                
             raw_res = self._send_rpc(f'capture "mdw {hex(start_node.addr)} {count}"')
-            tokens = [token for token in raw_res.replace(":", " ").split() if all(c in "0123456789abcdefABCDEFx" for c in token)]
-            values = [token for token in tokens if token.lower().startswith("0x") or len(token) == 8]
-            if values and values[0].lower().startswith("0x"):
-                values = values[1:]
+            
+            # ======== 修复点：全新且健壮的多行数据解析逻辑 ========
+            values = []
+            for line in raw_res.splitlines():
+                # 如果有冒号，说明是 "0x200000e0: " 这种地址头，丢弃冒号和之前的内容
+                if ':' in line:
+                    line = line.split(':', 1)[1]
+                
+                # 按空格分割剩下的纯数据部分
+                for token in line.split():
+                    # 只要是纯十六进制字符，就认为是有效数据
+                    if all(c in "0123456789abcdefABCDEF" for c in token):
+                        values.append(token)
+            # ======================================================
+
             for j in range(count):
                 curr_node = sorted_nodes[i + j]
                 if j < len(values):
                     raw_int = int(values[j], 16)
-                    results_map[curr_node.addr] = self._parse_raw_int(raw_int, curr_node)
+                    # 确保调用你最新修改的 _parse_raw_value 或 _parse_raw_int
+                    results_map[curr_node.addr] = self._parse_raw_value(raw_int, curr_node) 
                 else:
                     results_map[curr_node.addr] = "N/A"
             i += count
+            
         return [results_map.get(node.addr, "N/A") for node in nodes]
 
-    def _parse_raw_int(self, raw_int: int, node: VariableNode) -> Any:
+
+    def read_memory_bytes(self, addr: int, size: int) -> str:
+        """使用 mdb 读取指定长度的内存并转为字符串"""
+        # mdb 指令返回格式通常为: 0x2000002c: 42 61 74 74 65 72 79 00 ...
+        raw_res = self._send_rpc(f'capture "mdb {hex(addr)} {size}"')
+        
         try:
+            # 提取十六进制部分
+            # 过滤掉地址前缀（带冒号的部分）
+            hex_tokens = []
+            for line in raw_res.splitlines():
+                parts = line.split(':')
+                if len(parts) > 1:
+                    # 拿到冒号后面的十六进制字节
+                    tokens = parts[1].split()
+                    for t in tokens:
+                        if len(t) == 2 and all(c in "0123456789abcdefABCDEF" for c in t):
+                            hex_tokens.append(t)
+            
+            # 转为字节流
+            byte_data = bytes([int(h, 16) for h in hex_tokens[:size]])
+            # 遇到 \x00 截断，并解码
+            return byte_data.split(b'\x00')[0].decode('ascii', errors='ignore')
+        except Exception:
+            return "Decode Error"
+    # def _parse_raw_int(self, raw_int: int, node: VariableNode) -> Any:
+    #     try:
+    #         if node.type == "float":
+    #             return round(struct.unpack("<f", struct.pack("<I", raw_int))[0], 4)
+    #         if node.size == 1:
+    #             return raw_int & 0xFF
+    #         if node.size == 2:
+    #             return raw_int & 0xFFFF
+    #         return raw_int
+    #     except Exception:
+    #         return "ERR"
+
+    def _parse_raw_value(self, raw_int: int, node: VariableNode) -> Any:
+        try:
+            if node.size == 1:
+                val = raw_int & 0xFF
+                # 如果类型是 char，并且在可见 ASCII 码范围内，则同时显示字符
+                if "char" in node.type_name.lower() and 32 <= val <= 126:
+                    return f"{val} ('{chr(val)}')"
+                return val
+            # 1. 如果是字符串 (针对 name 这种 char 数组)
+            if node.type == "string":
+                # 将整数转为字节，例如 0x74746142 -> b'Batt' (小端)
+                # 只能处理前 4 个字节，如果需要更长，需要修改 RPC 读取指令
+                b = struct.pack("<I", raw_int & 0xFFFFFFFF)
+                # 解码并去掉末尾的空字符 \x00
+                return b.decode('ascii', errors='ignore').split('\x00')[0]
+
+            # 2. 如果是浮点数
             if node.type == "float":
                 return round(struct.unpack("<f", struct.pack("<I", raw_int))[0], 4)
+
+            # 3. 处理不同大小的整数
             if node.size == 1:
                 return raw_int & 0xFF
             if node.size == 2:
                 return raw_int & 0xFFFF
+                
             return raw_int
         except Exception:
             return "ERR"
@@ -150,43 +221,122 @@ class ElfExpert:
                     if node:
                         self.root_vars[name] = node
 
+    def _fill_array_children(self, parent_node: VariableNode, base_addr: int, dims: list[int], type_off: int, cu_off: int, depth: int, elem_size: int):
+        """
+        递归填充数组子节点。
+        dims: 剩余维度的列表，例如 [2, 3] 表示当前是 2x3 的数组
+        elem_size: 最小单个元素的字节大小
+        """
+        import math
+        
+        count = dims[0] # 当前维度的元素个数
+        # 计算当前维度下，每一个元素的跨度（Stride）
+        # 例如 int a[2][3]，第一层的 stride 是 3个int的大小，即 12字节
+        stride = elem_size * (math.prod(dims[1:]) if len(dims) > 1 else 1)
+        
+        for i in range(count):
+            current_addr = base_addr + i * stride
+            index_str = f"[{i}]"
+            
+            if len(dims) > 1:
+                # 还有下一维，创建一个中间容器节点
+                child_type_name = f"sub_array_{len(dims)-1}"
+                sub_node = VariableNode(index_str, current_addr, "array", 0, child_type_name)
+                # 递归处理下一维
+                self._fill_array_children(sub_node, current_addr, dims[1:], type_off, cu_off, depth + 1, elem_size)
+                parent_node.children[index_str] = sub_node
+            else:
+                # 最后一维，创建真实的元素节点（如 int 或 struct）
+                leaf_node = self._expand_node(index_str, current_addr, type_off, cu_off, depth + 1)
+                if leaf_node:
+                    parent_node.children[index_str] = leaf_node
+
+    # 递归展开节点
     def _expand_node(self, name: str, addr: int, type_off: int, cu_off: int, depth: int) -> VariableNode | None:
-        if depth > 12:
+        if depth > 15:
             return None
+            
         die = self.type_die_map.get((cu_off, type_off))
         if not die:
             return None
+
         name_attr = die.attributes.get("DW_AT_name")
         type_name = name_attr.value.decode("utf-8") if name_attr else ""
+        
+        # 统一获取当前类型的字节大小 (重要：用于步长计算)
+        byte_size = die.attributes.get("DW_AT_byte_size")
+        current_size = byte_size.value if byte_size else 0
+
+        # --- 1. 处理修饰类型 ---
         if die.tag in ("DW_TAG_volatile_type", "DW_TAG_const_type", "DW_TAG_typedef"):
             next_type = die.attributes.get("DW_AT_type")
-            if not next_type:
-                return None
+            if not next_type: return None
             node = self._expand_node(name, addr, next_type.value + cu_off, cu_off, depth + 1)
-            if node and not node.type_name:
+            if node and not node.type_name: 
                 node.type_name = type_name
             return node
-        if die.tag == "DW_TAG_base_type":
-            size = die.attributes.get("DW_AT_byte_size").value if "DW_AT_byte_size" in die.attributes else 4
-            value_type = "float" if "float" in type_name.lower() else "int"
-            return VariableNode(name, addr, value_type, size, type_name)
-        if die.tag == "DW_TAG_structure_type":
-            struct_node = VariableNode(name, addr, "struct", 0, type_name or "struct")
-            for child in die.iter_children():
-                if child.tag != "DW_TAG_member":
-                    continue
-                member_name = child.attributes.get("DW_AT_name")
-                member_location = child.attributes.get("DW_AT_data_member_location")
-                member_type = child.attributes.get("DW_AT_type")
-                if not (member_name and member_location and member_type):
-                    continue
-                offset = member_location.value[0] if isinstance(member_location.value, list) else member_location.value
-                expanded_child = self._expand_node(member_name.value.decode("utf-8"), addr + offset, member_type.value + cu_off, cu_off, depth + 1)
-                if expanded_child:
-                    struct_node.children[expanded_child.name] = expanded_child
-            return struct_node
-        return None
 
+        # --- 2. 处理基础类型 ---
+        if die.tag == "DW_TAG_base_type":
+            value_type = "float" if "float" in type_name.lower() else "int"
+            return VariableNode(name, addr, value_type, current_size, type_name)
+
+        # --- 3. 处理枚举类型 ---
+        if die.tag == "DW_TAG_enumeration_type":
+            return VariableNode(name, addr, "enum", current_size or 4, type_name or "enum")
+
+        # --- 4. 处理数组类型 ---
+        if die.tag == "DW_TAG_array_type":
+            element_type_attr = die.attributes.get("DW_AT_type")
+            if not element_type_attr: return None
+            
+            dimensions = []
+            for child in die.iter_children():
+                if child.tag == "DW_TAG_subrange_type":
+                    ubound = child.attributes.get("DW_AT_upper_bound")
+                    if ubound:
+                        dimensions.append(ubound.value + 1)
+            
+            if not dimensions: return None
+            
+            # 获取元素节点以获取其 size
+            element_node = self._expand_node(f"{name}[0]", addr, element_type_attr.value + cu_off, cu_off, depth + 1)
+            if not element_node: return None
+
+            # 判定：如果是 char 类型的 1 维数组，标记为 string
+            is_char = "char" in element_node.type_name.lower()
+            is_1d = len(dimensions) == 1
+            v_type = "string" if (is_char and is_1d) else "array"
+
+            # total_size 非常重要，决定了我们要从内存读多少字节
+            total_size = element_node.size * dimensions[0] 
+            array_node = VariableNode(name, addr, v_type, total_size, f"{element_node.type_name}[{']['.join(map(str, dimensions))}]")
+            
+            # 只有元素数量合理时才填充子节点
+            if math.prod(dimensions) <= 256:
+                self._fill_array_children(array_node, addr, dimensions, element_type_attr.value + cu_off, cu_off, depth, element_node.size)
+                
+            return array_node
+
+        # --- 5. 处理结构体 ---
+        if die.tag == "DW_TAG_structure_type":
+            # 关键修复：current_size 必须从 DWARF 读取，不能固定为 0
+            struct_node = VariableNode(name, addr, "struct", current_size, type_name or "struct")
+            for child in die.iter_children():
+                if child.tag == "DW_TAG_member":
+                    m_name = child.attributes.get("DW_AT_name")
+                    m_loc = child.attributes.get("DW_AT_data_member_location")
+                    m_type = child.attributes.get("DW_AT_type")
+                    if m_name and m_loc and m_type:
+                        # 转换偏移量
+                        offset = m_loc.value[0] if isinstance(m_loc.value, list) else m_loc.value
+                        member_name = m_name.value.decode("utf-8")
+                        child_node = self._expand_node(member_name, addr + offset, m_type.value + cu_off, cu_off, depth + 1)
+                        if child_node:
+                            struct_node.children[member_name] = child_node
+            return struct_node
+
+        return None
 
 class DebugDataServer:
     def __init__(self, elf_path: str, host: str, port: int):
@@ -198,15 +348,28 @@ class DebugDataServer:
         return [self.expert.root_vars[name].to_summary(name) for name in sorted(self.expert.root_vars.keys())]
 
     def resolve_path(self, path: str) -> VariableNode | None:
-        parts = [part for part in path.split(".") if part]
+        if not path:
+            return None
+
+        # 1. 规范化路径：将 "a[0].b" 变为 "a.[0].b"
+        # 这样我们可以统一使用 "." 作为分隔符，而不破坏 "[0]" 这种 key
+        norm_path = path.replace("[", ".[")
+        parts = [p for p in norm_path.split(".") if p]
+
         if not parts:
             return None
-        node = self.expert.root_vars.get(parts[0])
+
+        # 2. 从根变量开始查找
+        current_node = self.expert.root_vars.get(parts[0])
+        
+        # 3. 逐层深入
         for part in parts[1:]:
-            if not node:
+            if not current_node:
                 return None
-            node = node.children.get(part)
-        return node
+            # 尝试在当前节点的 children 中查找下一级
+            current_node = current_node.children.get(part)
+            
+        return current_node
 
     def describe(self, path: str) -> dict[str, Any] | None:
         node = self.resolve_path(path)
@@ -216,29 +379,38 @@ class DebugDataServer:
         node = self.resolve_path(path)
         if not node:
             return None
-        return [child.to_summary(f"{path}.{name}") for name, child in sorted(node.children.items())]
+        
+        # 使用正则表达式提取数字进行排序
+        def natural_key(string_):
+            return [int(s) if s.isdigit() else s for s in re.split(r'(\d+)', string_)]
+
+        sorted_items = sorted(node.children.items(), key=lambda x: natural_key(x[0]))
+        return [child.to_summary(f"{path}{'' if name.startswith('[') else '.'}{name}") for name, child in sorted_items]
 
     def read_paths(self, paths: list[str]) -> list[dict[str, Any]]:
-        nodes: list[VariableNode] = []
-        valid_paths: list[str] = []
+        results = []
+        # 分离普通变量和字符串变量
+        normal_nodes = []
+        
         for path in paths:
             node = self.resolve_path(path)
-            # 结构体本身不能读数值，只能读它的成员
-            if node and node.type != "struct":
-                nodes.append(node)
-                valid_paths.append(path)
+            if not node: continue
+            
+            if node.type == "string":
+                # 字符串单独处理，读完整长度
+                str_val = self.rpc.read_memory_bytes(node.addr, node.size)
+                results.append({"path": path, "value": str_val, "address": hex(node.addr)})
+            elif node.type != "struct":
+                normal_nodes.append((path, node))
         
-        values = self.rpc.batch_read(nodes)
-        
-        # 返回更丰富的信息，方便前端直接更新 UI 而不需要再 describe
-        return [
-            {
-                "path": path, 
-                "value": values[idx], 
-                "address": hex(nodes[idx].addr)
-            } for idx, path in enumerate(valid_paths)
-        ]
-
+        # 普通变量继续使用原来的批量读取优化
+        if normal_nodes:
+            nodes_only = [n[1] for n in normal_nodes]
+            values = self.rpc.batch_read(nodes_only)
+            for idx, (path, node) in enumerate(normal_nodes):
+                results.append({"path": path, "value": values[idx], "address": hex(node.addr)})
+                
+        return results
         
     def write_value(self, path: str, value: str) -> bool:
         node = self.resolve_path(path)

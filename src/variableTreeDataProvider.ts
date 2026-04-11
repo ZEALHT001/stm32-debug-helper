@@ -17,8 +17,11 @@ export class VariableTreeItem extends vscode.TreeItem {
         this.tooltip = this.buildTooltip();
         this.contextValue = this.buildContextValue();
 
+        // 图标优化：结构体/数组使用文件夹/模块图标，普通变量使用变量图标
         if (variableInfo.hasChildren) {
-            this.iconPath = new vscode.ThemeIcon('symbol-field');
+            this.iconPath = new vscode.ThemeIcon('symbol-class');
+        } else if (variableInfo.type === 'string') {
+            this.iconPath = new vscode.ThemeIcon('symbol-string');
         } else {
             this.iconPath = new vscode.ThemeIcon('symbol-variable');
         }
@@ -27,28 +30,46 @@ export class VariableTreeItem extends vscode.TreeItem {
     private buildDescription(): string {
         const parts: string[] = [];
 
-        if (this.value !== undefined && this.value !== null) {
-            parts.push(`= ${this.value}`);
+        // 1. 值的显示逻辑优化
+        if (this.variableInfo.hasChildren) {
+            // 结构体或数组，显示占位符而不是空白
+            parts.push(this.variableInfo.type === 'array' ? '[...]' : '{...}');
+        } else if (this.value !== undefined && this.value !== null) {
+            // 如果是字符串类型，加上双引号以示区分
+            if (this.variableInfo.type === 'string') {
+                parts.push(`= "${this.value}"`);
+            } else {
+                parts.push(`= ${this.value}`);
+            }
+        } else {
+            // 没有获取到值时的占位符
+            parts.push('= ?');
         }
 
-        parts.push(this.variableInfo.typeName);
+        // 2. 追加类型信息
+        if (this.variableInfo.typeName) {
+            parts.push(this.variableInfo.typeName);
+        }
+        
         return parts.join(' | ');
     }
 
     private buildTooltip(): vscode.MarkdownString {
         const md = new vscode.MarkdownString();
         md.appendMarkdown(`**${this.variableInfo.name}**\n\n`);
-        md.appendMarkdown(`- **Path**: ${this.variableInfo.path}\n`);
-        md.appendMarkdown(`- **Type**: ${this.variableInfo.typeName}\n`);
-        md.appendMarkdown(`- **Address**: ${this.variableInfo.address}\n`);
-        md.appendMarkdown(`- **Size**: ${this.variableInfo.size} bytes\n`);
+        md.appendMarkdown(`- **Path:** \`${this.variableInfo.path}\`\n`);
+        md.appendMarkdown(`- **Type:** \`${this.variableInfo.typeName || this.variableInfo.type}\`\n`);
+        md.appendMarkdown(`- **Address:** \`${this.variableInfo.address}\`\n`);
+        md.appendMarkdown(`- **Size:** \`${this.variableInfo.size} bytes\`\n`);
+        
         if (this.value !== undefined) {
-            md.appendMarkdown(`- **Value**: ${this.value}\n`);
+            md.appendMarkdown(`- **Value:** \`${this.value}\`\n`);
         }
         return md;
     }
 
     private buildContextValue(): string {
+        // 区分是否有子节点，用于控制右键菜单（比如禁止对结构体直接修改值）
         if (this.isRoot) {
             return this.variableInfo.hasChildren ? 'rootVariableWithChildren' : 'rootVariable';
         }
@@ -58,7 +79,7 @@ export class VariableTreeItem extends vscode.TreeItem {
 
 export class WaitingTreeItem extends vscode.TreeItem {
     constructor() {
-        super('Waiting for cortex-debug session...', vscode.TreeItemCollapsibleState.None);
+        super('Waiting for debug session...', vscode.TreeItemCollapsibleState.None);
         this.iconPath = new vscode.ThemeIcon('debug-pause');
         this.contextValue = 'waitingForDebugSession';
     }
@@ -66,7 +87,7 @@ export class WaitingTreeItem extends vscode.TreeItem {
 
 export class AddVariableTreeItem extends vscode.TreeItem {
     constructor() {
-        super('+ Add Variable', vscode.TreeItemCollapsibleState.None);
+        super('+ Add Variable to Watch', vscode.TreeItemCollapsibleState.None);
         this.iconPath = new vscode.ThemeIcon('add');
         this.contextValue = 'addVariable';
         this.command = {
@@ -83,8 +104,9 @@ export class VariableTreeDataProvider implements vscode.TreeDataProvider<vscode.
     private rootVariables: VariableInfo[] = [];
     private allVariables: Map<string, VariableInfo> = new Map();
     private valueCache: Map<string, any> = new Map();
+    
     private refreshTimer: NodeJS.Timeout | null = null;
-    private refreshInterval = 500;
+    private refreshInterval = 500; // 500ms 刷新率，嵌入式设备建议不要低于此值
     private isRefreshing = false;
 
     constructor(
@@ -115,6 +137,9 @@ export class VariableTreeDataProvider implements vscode.TreeDataProvider<vscode.
         }
     }
 
+    /**
+     * 核心优化：后台定时刷新变量值
+     */
     private async refreshValues(): Promise<void> {
         if (this.isRefreshing || !this.serverClient.isRunning() || this.allVariables.size === 0) {
             return;
@@ -123,6 +148,8 @@ export class VariableTreeDataProvider implements vscode.TreeDataProvider<vscode.
         this.isRefreshing = true;
 
         try {
+            // 【关键修复 1】：严格过滤！只读取非结构体/非数组的叶子节点
+            // 避免将 `sys_master.main_sensor.accel` 这种结构体路径发给后端导致后端跳过
             const pathsToRead: string[] = [];
             for (const [path, variable] of this.allVariables) {
                 if (!variable.hasChildren) {
@@ -142,12 +169,14 @@ export class VariableTreeDataProvider implements vscode.TreeDataProvider<vscode.
                     this.valueCache.set(result.path, result.value);
                 }
 
+                // 【优化】：只有当数值真正发生变化时，才触发 UI 重绘，极大降低 CPU 占用
                 if (hasChanges) {
                     this.refresh();
                 }
             }
-        } catch {
-            // Silently ignore refresh errors
+        } catch (error) {
+            console.warn('Auto-refresh failed:', error);
+            // 可以在此处添加状态栏提示，不要使用弹窗打扰用户
         } finally {
             this.isRefreshing = false;
         }
@@ -190,7 +219,7 @@ export class VariableTreeDataProvider implements vscode.TreeDataProvider<vscode.
                     this.registerVariables([variableInfo]);
                 }
             } catch {
-                // Ignore invalid saved variables
+                console.warn(`Failed to restore watched variable: ${path}`);
             }
         }
 
@@ -205,12 +234,10 @@ export class VariableTreeDataProvider implements vscode.TreeDataProvider<vscode.
 
     async addVariable(path: string): Promise<void> {
         const normalizedPath = path.trim();
-        if (!normalizedPath) {
-            return;
-        }
+        if (!normalizedPath) return;
 
         if (this.isRootVariablePath(normalizedPath)) {
-            vscode.window.showInformationMessage(`Variable already added: ${normalizedPath}`);
+            vscode.window.showInformationMessage(`Variable already being watched: ${normalizedPath}`);
             return;
         }
 
@@ -220,7 +247,11 @@ export class VariableTreeDataProvider implements vscode.TreeDataProvider<vscode.
                 this.rootVariables.push(variableInfo);
                 this.registerVariables([variableInfo]);
                 await this.persistWatchedPaths();
-                this.startAutoRefresh();
+                
+                // 添加成功后如果还没有启动刷新，则启动
+                if (!this.refreshTimer) {
+                    this.startAutoRefresh();
+                }
                 this.refresh();
             }
         } catch (error) {
@@ -229,53 +260,51 @@ export class VariableTreeDataProvider implements vscode.TreeDataProvider<vscode.
     }
 
     async editVariableValue(item: VariableTreeItem): Promise<void> {
+        // 【安全检查】：禁止编辑结构体或数组容器本身
         if (item.variableInfo.hasChildren) {
+            vscode.window.showWarningMessage('Cannot directly edit a structure or array. Please edit its members.');
             return;
         }
 
         const currentValue = this.valueCache.get(item.variableInfo.path);
         const input = await vscode.window.showInputBox({
-            placeHolder: 'Enter new value (supports decimal or hex like 0x10)',
-            prompt: `Set value for ${item.variableInfo.path}`,
+            placeHolder: 'e.g., 42, 0x2A, 3.14',
+            prompt: `Set new value for ${item.variableInfo.path}`,
             value: currentValue !== undefined ? String(currentValue) : ''
         });
 
-        if (input === undefined) {
-            return;
-        }
+        if (input === undefined || input.trim() === '') return;
 
         try {
             await this.serverClient.writeValue(item.variableInfo.path, input.trim());
+            // 乐观更新 UI
             this.valueCache.set(item.variableInfo.path, input.trim());
             this.refresh();
+            
+            // 稍微延迟后主动刷新一次确保底层真正写入成功
             setTimeout(() => {
                 void this.refreshValues();
-            }, 150);
+            }, 200);
         } catch (error) {
-            vscode.window.showErrorMessage(`Failed to update variable: ${error}`);
+            vscode.window.showErrorMessage(`Write failed for ${item.variableInfo.path}: ${error}`);
         }
     }
 
     async renameVariable(item: VariableTreeItem): Promise<void> {
         if (!item.isRoot) {
-            vscode.window.showInformationMessage('Only watched root variables can be renamed to another expression.');
+            vscode.window.showInformationMessage('Only root variables can be renamed.');
             return;
         }
 
         const input = await vscode.window.showInputBox({
-            placeHolder: 'Enter corrected variable name or expression',
-            prompt: `Replace watched variable ${item.variableInfo.path}`,
+            placeHolder: 'Enter new variable name or path',
+            prompt: `Edit expression for ${item.variableInfo.path}`,
             value: item.variableInfo.path
         });
 
-        if (input === undefined) {
-            return;
-        }
-
+        if (input === undefined) return;
         const nextPath = input.trim();
-        if (!nextPath || nextPath === item.variableInfo.path) {
-            return;
-        }
+        if (!nextPath || nextPath === item.variableInfo.path) return;
 
         if (this.isRootVariablePath(nextPath)) {
             vscode.window.showErrorMessage(`Variable already exists: ${nextPath}`);
@@ -285,31 +314,42 @@ export class VariableTreeDataProvider implements vscode.TreeDataProvider<vscode.
         try {
             const variableInfo = await this.serverClient.describe(nextPath);
             if (!variableInfo) {
-                vscode.window.showErrorMessage(`Variable not found: ${nextPath}`);
+                vscode.window.showErrorMessage(`Variable not found in ELF: ${nextPath}`);
                 return;
             }
 
             this.rootVariables = this.rootVariables.map(variable =>
                 variable.path === item.variableInfo.path ? variableInfo : variable
             );
+            
+            // 重新构建索引以防内存泄漏
             this.rebuildVariableIndex();
             this.valueCache.delete(item.variableInfo.path);
             await this.persistWatchedPaths();
             this.refresh();
         } catch (error) {
-            vscode.window.showErrorMessage(`Failed to rename variable: ${error}`);
+            vscode.window.showErrorMessage(`Rename failed: ${error}`);
         }
     }
 
     async deleteVariable(item: VariableTreeItem): Promise<void> {
         if (!item.isRoot) {
-            vscode.window.showInformationMessage('Only watched root variables can be deleted.');
+            vscode.window.showInformationMessage('Please remove the root variable to delete this member.');
             return;
         }
 
         this.rootVariables = this.rootVariables.filter(variable => variable.path !== item.variableInfo.path);
-        this.rebuildVariableIndex();
-        this.valueCache.delete(item.variableInfo.path);
+        
+        // 【关键修复 2】：删除根节点时，通过重建来彻底清除它包含的所有子节点缓存
+        this.rebuildVariableIndex(); 
+        
+        // 清理值缓存 (仅清理前缀匹配的)
+        for (const key of this.valueCache.keys()) {
+            if (key.startsWith(item.variableInfo.path)) {
+                this.valueCache.delete(key);
+            }
+        }
+
         await this.persistWatchedPaths();
 
         if (this.rootVariables.length === 0) {
@@ -337,11 +377,12 @@ export class VariableTreeDataProvider implements vscode.TreeDataProvider<vscode.
         }
 
         if (element instanceof VariableTreeItem) {
+            // 请求后端获取子节点
             const children = await this.serverClient.listChildren(element.variableInfo.path);
-            if (children) {
+            if (children && children.length > 0) {
                 this.registerVariables(children);
+                return this.createTreeItems(children, false);
             }
-            return this.createTreeItems(children || [], false);
         }
 
         return [];
@@ -351,6 +392,7 @@ export class VariableTreeDataProvider implements vscode.TreeDataProvider<vscode.
         const items: VariableTreeItem[] = [];
         const pathsToRead: string[] = [];
 
+        // 【关键修复 3】：只在初次展开时，主动去读取叶子节点的值
         for (const variable of variables) {
             if (!variable.hasChildren && !this.valueCache.has(variable.path)) {
                 pathsToRead.push(variable.path);
@@ -364,7 +406,7 @@ export class VariableTreeDataProvider implements vscode.TreeDataProvider<vscode.
                     this.valueCache.set(result.path, result.value);
                 }
             } catch (error) {
-                console.error('Failed to read values:', error);
+                console.warn('Failed to pre-fetch values for newly expanded items:', error);
             }
         }
 

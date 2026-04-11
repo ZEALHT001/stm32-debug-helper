@@ -170,7 +170,7 @@ async function ensureServerRunning(showSuccessMessage: boolean): Promise<void> {
         const elfPath = await resolveElfPath(config);
 
         if (!elfPath) {
-            throw new Error('No ELF found. Expected build/Debug/*.elf or configured stm32DebugHelper.elfPath');
+            throw new Error('No ELF found. Expected build/*.elf or configured stm32DebugHelper.elfPath');
         }
 
         const currentConfigElfPath = config.get<string>('elfPath', '');
@@ -206,7 +206,7 @@ async function resolveElfPath(config: vscode.WorkspaceConfiguration): Promise<st
         return undefined;
     }
 
-    const debugDir = path.join(workspaceFolder, 'build', 'Debug');
+    const debugDir = path.join(workspaceFolder, 'build');
     if (fs.existsSync(debugDir)) {
         const elfFiles = fs.readdirSync(debugDir)
             .filter(file => file.toLowerCase().endsWith('.elf'))

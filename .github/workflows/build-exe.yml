@@ -1,0 +1,43 @@
+name: 打包后端可执行文件
+
+# 触发条件：当你把代码 push（推送）到 main 分支时触发
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+    # 核心：使用标准的 Windows (x86_64) 虚拟机进行打包
+    runs-on: windows-latest
+
+    steps:
+      # 1. 检出（下载）你的代码到虚拟机
+      - uses: actions/checkout@v4
+
+      # 2. 安装 Python 环境 (强制使用 x64 版本)
+      - name: 设置 Python 环境
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          architecture: 'x64'
+
+      # 3. 安装依赖库
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyelftools pyinstaller
+
+      # 4. 运行 PyInstaller 打包
+      # 这里把 backend.py 打包成单文件 exe
+      - name: 运行 PyInstaller
+        run: |
+          pyinstaller --onefile --noconsole resources/server.py
+
+      # 5. 将生成的产物（Artifact）上传到 GitHub 页面供下载
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: stm32-server-exe  # 下载时的文件名
+          path: dist/server.exe   # PyInstaller 生成的路径
