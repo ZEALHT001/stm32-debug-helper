@@ -155,34 +155,27 @@ class TclRpcClient:
 
     def _parse_raw_value(self, raw_int: int, node: VariableNode) -> Any:
         try:
+            # 1. 单字节处理 (处理 char 及 uint8)
             if node.size == 1:
                 val = raw_int & 0xFF
                 # 如果类型是 char，并且在可见 ASCII 码范围内，则同时显示字符
                 if "char" in node.type_name.lower() and 32 <= val <= 126:
                     return f"{val} ('{chr(val)}')"
                 return val
-            # 1. 如果是字符串 (针对 name 这种 char 数组)
-            if node.type == "string":
-                # 将整数转为字节，例如 0x74746142 -> b'Batt' (小端)
-                # 只能处理前 4 个字节，如果需要更长，需要修改 RPC 读取指令
-                b = struct.pack("<I", raw_int & 0xFFFFFFFF)
-                # 解码并去掉末尾的空字符 \x00
-                return b.decode('ascii', errors='ignore').split('\x00')[0]
 
-            # 2. 如果是浮点数
+            # 2. 处理 2 字节整数
+            if node.size == 2:
+                return raw_int & 0xFFFF
+
+            # 3. 处理浮点数
             if node.type == "float":
                 return round(struct.unpack("<f", struct.pack("<I", raw_int))[0], 4)
 
-            # 3. 处理不同大小的整数
-            if node.size == 1:
-                return raw_int & 0xFF
-            if node.size == 2:
-                return raw_int & 0xFFFF
-                
+            # 4. 默认返回 4 字节整数
             return raw_int
         except Exception:
             return "ERR"
-
+   
     def write(self, node: VariableNode, val: str) -> bool:
         cmd_type = "mww" if node.size >= 4 else "mwh" if node.size == 2 else "mwb"
         try:
@@ -309,7 +302,7 @@ class ElfExpert:
             v_type = "string" if (is_char and is_1d) else "array"
 
             # total_size 非常重要，决定了我们要从内存读多少字节
-            total_size = element_node.size * dimensions[0] 
+            total_size = element_node.size * math.prod(dimensions)
             array_node = VariableNode(name, addr, v_type, total_size, f"{element_node.type_name}[{']['.join(map(str, dimensions))}]")
             
             # 只有元素数量合理时才填充子节点
@@ -377,15 +370,22 @@ class DebugDataServer:
 
     def list_children(self, path: str) -> list[dict[str, Any]] | None:
         node = self.resolve_path(path)
+        
+        # 1. 如果找不到节点，返回 None
         if not node:
             return None
-        
-        # 使用正则表达式提取数字进行排序
-        def natural_key(string_):
-            return [int(s) if s.isdigit() else s for s in re.split(r'(\d+)', string_)]
+            
+        # 2. 如果节点没有子元素，安全返回空列表
+        if not node.children:
+            return []
 
-        sorted_items = sorted(node.children.items(), key=lambda x: natural_key(x[0]))
-        return [child.to_summary(f"{path}{'' if name.startswith('[') else '.'}{name}") for name, child in sorted_items]
+        # 3. 直接按照原本插入字典的物理顺序返回（取消所有额外排序）
+        results = []
+        for name, child in node.children.items():
+            child_path = f"{path}{'' if name.startswith('[') else '.'}{name}"
+            results.append(child.to_summary(child_path))
+            
+        return results
 
     def read_paths(self, paths: list[str]) -> list[dict[str, Any]]:
         results = []
@@ -428,8 +428,12 @@ class DebugDataServer:
             return {"ok": True, "result": result} if result else {"ok": False, "error": f"Variable not found: {path}"}
         if command == "list_children":
             path = request.get("path", "")
-            result = self.list_children(path)
-            return {"ok": True, "result": result} if result is not None else {"ok": False, "error": f"Variable not found: {path}"}
+            result = self.list_children(path)  # 只调用一次
+            if result is not None:
+                return {"ok": True, "result": result}
+            else:
+                return {"ok": False, "error": f"Variable not found: {path}"}
+
         if command == "read_paths":
             return {"ok": True, "result": self.read_paths(request.get("paths", []))}
         if command == "write":

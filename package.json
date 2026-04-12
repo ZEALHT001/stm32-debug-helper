@@ -5,7 +5,7 @@
   "version": "1.0.0",
   "publisher": "RCIA-ZZE",
   "author": "ZEALHT001 <zealht@qq.com>",
-  "icon": "resources/icon.png",
+  "icon": "resources/icon.jpg",
   "keywords": ["STM32", "CMake", "Embedded", "Debug", "OpenOCD"],
   "repository": {
     "type": "git",
