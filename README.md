@@ -1,4 +1,4 @@
-# STM32 Debug Helper
+# STM32 Debug Helper by RCIA战队电控组
 
 <div align="center">
 
@@ -6,7 +6,9 @@
 ![VSCode](https://img.shields.io/badge/VSCode-1.85.0+-green.svg)
 ![License](https://img.shields.io/badge/license-MIT-orange.svg)
 
-**一个强大的 VSCode 扩展，用于 STM32 实时调试和变量监控**
+
+
+**一个强大的 VSCode 扩展，用于 STM32 实时调试和变量监控，由RCIA战队电控组开发**
 
 [English](#english) | [中文](#中文)
 
@@ -258,7 +260,7 @@ npx vsce package
 
 ### 📖 Introduction
 
-STM32 Debug Helper is a VSCode extension designed for STM32 development, enabling real-time communication with target boards through OpenOCD's TCL RPC interface. It automatically parses debug information from ELF files and displays global variables in a tree structure within VSCode, supporting real-time reading and modification of variable values.
+STM32 Debug Helper is a VSCode extension designed for STM32 development by RCIA战队电控组, enabling real-time communication with target boards through OpenOCD's TCL RPC interface. It automatically parses debug information from ELF files and displays global variables in a tree structure within VSCode, supporting real-time reading and modification of variable values.
 
 ### ✨ Core Features
 
