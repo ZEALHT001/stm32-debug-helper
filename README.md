@@ -10,6 +10,10 @@
 
 **一个强大的 VSCode 扩展，用于 STM32 实时调试和变量监控，由RCIA战队电控组开发**
 
+注意：使用VS Code来开发STM32的工具链一键安装配置脚本已经上传到 [Release](https://github.com/ZEALHT001/stm32-debug-helper/releases/tag/v1.0.0) 
+
+
+
 [English](#english) | [中文](#中文)
 
 </div>
