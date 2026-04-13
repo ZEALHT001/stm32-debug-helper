@@ -25,7 +25,7 @@ def build_server():
     print(f"Building server for {platform_name}...")
     
     pyinstaller_args = [
-        'server.py',
+        './resources/server.py',
         '--onefile',
         '--name', exe_name,
         '--distpath', str(output_dir),

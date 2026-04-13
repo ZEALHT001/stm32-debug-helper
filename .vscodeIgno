@@ -1,0 +1,33 @@
+# 1. 忽略所有的前端源码（运行时只需要 out 目录里的编译结果）
+.vscode/**
+.vscode-test/**
+src/**
+test/**
+*.ts
+tsconfig.json
+.eslintrc.json
+
+# 2. 忽略庞大的开发依赖和日志
+node_modules/**
+npm-debug.log
+yarn-error.log
+
+# 3. 忽略工程与版本控制文件
+.git/**
+.github/**
+.gitignore
+*.md
+!README.md
+!CHANGELOG.md
+
+# 4. 忽略你本地测试用的 C/C++ 编译产物和工程文件
+build/**
+*.elf
+*.hex
+*.bin
+*.map
+SVD/**
+
+# 5. 忽略打包脚本等杂物
+copy-server.js
+build_server.py
