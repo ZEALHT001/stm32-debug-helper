@@ -69,11 +69,17 @@ export class VariableTreeItem extends vscode.TreeItem {
     }
 
     private buildContextValue(): string {
-        // 区分是否有子节点，用于控制右键菜单（比如禁止对结构体直接修改值）
+        // 如果是字符串类型，无论是否有子节点，都赋予专门的标识符
+        const typeSuffix = this.variableInfo.type === 'string' ? 'String' : '';
+        
         if (this.isRoot) {
-            return this.variableInfo.hasChildren ? 'rootVariableWithChildren' : 'rootVariable';
+            return this.variableInfo.hasChildren 
+                ? `rootVariableWithChildren${typeSuffix}` 
+                : 'rootVariable';
         }
-        return this.variableInfo.hasChildren ? 'variableWithChildren' : 'variable';
+        return this.variableInfo.hasChildren 
+            ? `variableWithChildren${typeSuffix}` 
+            : 'variable';
     }
 }
 
@@ -106,16 +112,27 @@ export class VariableTreeDataProvider implements vscode.TreeDataProvider<vscode.
     private valueCache: Map<string, any> = new Map();
     
     private refreshTimer: NodeJS.Timeout | null = null;
-    private refreshInterval = 500; // 500ms 刷新率，嵌入式设备建议不要低于此值
+    private refreshInterval = 250;
     private isRefreshing = false;
 
     constructor(
         private serverClient: ServerClient,
         private workspaceState: vscode.Memento
-    ) {}
+    ) {
+        const config = vscode.workspace.getConfiguration('stm32DebugHelper');
+        this.refreshInterval = config.get<number>('refreshInterval', 250);
+    }
 
     refresh(): void {
         this._onDidChangeTreeData.fire();
+    }
+
+    updateRefreshInterval(interval: number): void {
+        this.refreshInterval = interval;
+        if (this.refreshTimer) {
+            this.stopAutoRefresh();
+            this.startAutoRefresh();
+        }
     }
 
     clearValueCache(): void {
@@ -261,23 +278,31 @@ export class VariableTreeDataProvider implements vscode.TreeDataProvider<vscode.
 
     async editVariableValue(item: VariableTreeItem): Promise<void> {
         // 【安全检查】：禁止编辑结构体或数组容器本身
-        if (item.variableInfo.hasChildren) {
+        if (item.variableInfo.hasChildren && item.variableInfo.type !== 'string') {
             vscode.window.showWarningMessage('Cannot directly edit a structure or array. Please edit its members.');
             return;
         }
 
         const currentValue = this.valueCache.get(item.variableInfo.path);
+        let initialValue = currentValue !== undefined ? String(currentValue) : '';
+
+        // 🔥 修复点：正则匹配 "78 ('N')" 这种格式，剔除提示字符，只保留纯数字
+        const charMatch = initialValue.match(/^(\-?\d+)\s*\('.*'\)$/);
+        if (charMatch) {
+            initialValue = charMatch[1];
+        }
+
         const input = await vscode.window.showInputBox({
             placeHolder: 'e.g., 42, 0x2A, 3.14',
             prompt: `Set new value for ${item.variableInfo.path}`,
-            value: currentValue !== undefined ? String(currentValue) : ''
+            value: initialValue // 使用剥离后的纯数字
         });
 
         if (input === undefined || input.trim() === '') return;
 
         try {
             await this.serverClient.writeValue(item.variableInfo.path, input.trim());
-            // 乐观更新 UI
+            // 乐观更新 UI (如果是 char，下次刷新会自动带上新字符，不用担心)
             this.valueCache.set(item.variableInfo.path, input.trim());
             this.refresh();
             

@@ -2,11 +2,17 @@
   "name": "stm32-debug-helper",
   "displayName": "STM32 Debug Helper",
   "description": "A VSCode extension for STM32 debugging. STM32调试插件，可以实现实时显示和修改全局变量。",
-  "version": "1.0.0",
+  "version": "1.1.1",
   "publisher": "RCIA-ZZE",
   "author": "ZEALHT001 <zealht@qq.com>",
   "icon": "resources/icon.jpg",
-  "keywords": ["STM32", "CMake", "Embedded", "Debug", "OpenOCD"],
+  "keywords": [
+    "STM32",
+    "CMake",
+    "Embedded",
+    "Debug",
+    "OpenOCD"
+  ],
   "repository": {
     "type": "git",
     "url": "https://github.com/ZEALHT001/stm32-debug-helper.git"
@@ -20,7 +26,10 @@
   "categories": [
     "Other"
   ],
-  "activationEvents": [],
+  "activationEvents": [
+    "onStartupFinished",
+    "onDebug" 
+  ],
   "main": "./out/extension.js",
   "contributes": {
     "commands": [
@@ -72,7 +81,8 @@
       "stm32-debug-panel": [
         {
           "id": "stm32-debug-variables-panel",
-          "name": "Variables"
+          "name": "Variables",
+          "icon": "resources/icon.svg"
         }
       ]
     },
@@ -129,6 +139,12 @@
           "type": "number",
           "default": 50001,
           "description": "OpenOCD TCL RPC port"
+        },
+        "stm32DebugHelper.refreshInterval": {
+          "type": "number",
+          "default": 250,
+          "minimum": 100,
+          "description": "Variable refresh interval in milliseconds (minimum 100ms)"
         }
       }
     }

@@ -119,6 +119,14 @@ export function activate(context: vscode.ExtensionContext) {
         void ensureServerRunning(false);
     });
 
+    const configChangeDisposable = vscode.workspace.onDidChangeConfiguration((event) => {
+        if (event.affectsConfiguration('stm32DebugHelper.refreshInterval')) {
+            const config = vscode.workspace.getConfiguration('stm32DebugHelper');
+            const newInterval = config.get<number>('refreshInterval', 250);
+            variableTreeDataProvider.updateRefreshInterval(newInterval);
+        }
+    });
+
     context.subscriptions.push(
         helloWorldCommand,
         startServerCommand,
@@ -130,7 +138,8 @@ export function activate(context: vscode.ExtensionContext) {
         deleteVariableCommand,
         showBottomPanelCommand,
         panelTreeView,
-        debugStartDisposable
+        debugStartDisposable,
+        configChangeDisposable
     );
 }
 

@@ -215,11 +215,42 @@ class TclRpcClient:
             return "ERR"
 
     def write(self, node: VariableNode, val: str) -> bool:
-        cmd_type = "mww" if node.size >= 4 else "mwh" if node.size == 2 else "mwb"
         try:
-            raw_value = struct.unpack("<I", struct.pack("<f", float(val)))[0] if node.type == "float" else int(val, 0)
-            self._send_rpc(f"{cmd_type} {hex(node.addr)} {hex(raw_value)}")
-            return True
+            # --- 1. 处理字符串写入 (char 数组) ---
+            if node.type == "string":
+                # 将输入字符串转为 ASCII 字节，确保不超过数组定义的 size
+                # 我们最多写入 node.size 个字节
+                encoded = val.encode("ascii", errors="ignore")[:node.size]
+                
+                # 逐字节写入内存
+                for i, b in enumerate(encoded):
+                    self._send_rpc(f"mwb {hex(node.addr + i)} {hex(b)}")
+                
+                # 如果字符串没填满数组，在末尾补一个 \0 字符（C 语言字符串结束标志）
+                if len(encoded) < node.size:
+                    self._send_rpc(f"mwb {hex(node.addr + len(encoded))} 0")
+                return True
+
+            # --- 2. 处理 8 字节数据 (Double / Int64) ---
+            elif node.size == 8:
+                # ... 保持你之前的 double/int64 写入逻辑不变 ...
+                is_unsigned = "unsigned" in node.type_name.lower() or "uint" in node.type_name.lower()
+                fmt = "<Q" if is_unsigned else "<q"
+                if node.type == "double":
+                    raw_bytes = struct.pack("<d", float(val))
+                else:
+                    raw_bytes = struct.pack(fmt, int(val, 0))
+                val1, val2 = struct.unpack("<II", raw_bytes)
+                self._send_rpc(f"mww {hex(node.addr)} {hex(val1)}")
+                self._send_rpc(f"mww {hex(node.addr + 4)} {hex(val2)}")
+                return True
+
+            # --- 3. 处理普通 1/2/4 字节数据 ---
+            else:
+                cmd_type = "mww" if node.size >= 4 else "mwh" if node.size == 2 else "mwb"
+                raw_value = struct.unpack("<I", struct.pack("<f", float(val)))[0] if node.type == "float" else int(val, 0)
+                self._send_rpc(f"{cmd_type} {hex(node.addr)} {hex(raw_value)}")
+                return True
         except Exception:
             return False
 
@@ -345,16 +376,24 @@ class ElfExpert:
             is_1d = len(dimensions) == 1
             v_type = "string" if (is_char and is_1d) else "array"
 
-            # total_size 非常重要，决定了我们要从内存读多少字节
             total_size = element_node.size * math.prod(dimensions)
-            array_node = VariableNode(name, addr, v_type, total_size, f"{element_node.type_name}[{']['.join(map(str, dimensions))}]")
             
-            # 只有元素数量合理时才填充子节点
-            if math.prod(dimensions) <= 256:
+            # 🔥 修复 1：修改传递给前端的 typeName 标识
+            if v_type == "string":
+                # 显示为 "string (char[20])"，既明确类型，又防止内存越界瞎写
+                display_type_name = f"string ({element_node.type_name}[{dimensions[0]}])"
+            else:
+                display_type_name = f"{element_node.type_name}[{']['.join(map(str, dimensions))}]"
+            
+            array_node = VariableNode(name, addr, v_type, total_size, display_type_name)
+            
+            # 🔥 修复 2：斩断子节点！如果被判定为 string，绝不允许它往下生成 [0], [1]...
+            if math.prod(dimensions) <= 256 and v_type != "string":
                 self._fill_array_children(array_node, addr, dimensions, element_type_attr.value + cu_off, cu_off, depth, element_node.size)
                 
             return array_node
 
+            
         # --- 5. 处理结构体 ---
         if die.tag == "DW_TAG_structure_type":
             # 关键修复：current_size 必须从 DWARF 读取，不能固定为 0
@@ -456,6 +495,7 @@ class DebugDataServer:
                         is_unsigned = "unsigned" in node.type_name.lower() or "uint" in node.type_name.lower()
                         fmt = "<Q" if is_unsigned else "<q"
                         val = struct.unpack(fmt, raw_bytes)[0]
+                    val = str(val)
                 else:
                     val = "ERR"
                 results.append({"path": path, "value": val, "address": hex(node.addr)})
