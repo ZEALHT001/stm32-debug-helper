@@ -116,6 +116,27 @@ class TclRpcClient:
             
         return [results_map.get(node.addr, "N/A") for node in nodes]
 
+    def read_raw_bytes(self, addr: int, size: int) -> bytes:
+        """底层方法：使用 mdb 读取指定长度的纯字节流"""
+        raw_res = self._send_rpc(f'capture "mdb {hex(addr)} {size}"')
+        hex_tokens = []
+        try:
+            for line in raw_res.splitlines():
+                if ':' in line:
+                    tokens = line.split(':', 1)[1].split()
+                    for t in tokens:
+                        if len(t) == 2 and all(c in "0123456789abcdefABCDEF" for c in t):
+                            hex_tokens.append(t)
+            return bytes([int(h, 16) for h in hex_tokens[:size]])
+        except Exception:
+            return b""
+
+    def read_memory_bytes(self, addr: int, size: int) -> str:
+        """上层方法：读取字符串专门使用"""
+        byte_data = self.read_raw_bytes(addr, size)
+        if not byte_data: return "Decode Error"
+        return byte_data.split(b'\x00')[0].decode('ascii', errors='ignore')
+
 
     def read_memory_bytes(self, addr: int, size: int) -> str:
         """使用 mdb 读取指定长度的内存并转为字符串"""
@@ -155,27 +176,44 @@ class TclRpcClient:
 
     def _parse_raw_value(self, raw_int: int, node: VariableNode) -> Any:
         try:
-            # 1. 单字节处理 (处理 char 及 uint8)
+            # 🔥 新增：通过类型名智能判定是否为无符号整数
+            type_str = node.type_name.lower()
+            is_unsigned = "unsigned" in type_str or "uint" in type_str
+
+            # 1. 处理 1 字节整数 (int8_t, uint8_t, char)
             if node.size == 1:
                 val = raw_int & 0xFF
-                # 如果类型是 char，并且在可见 ASCII 码范围内，则同时显示字符
-                if "char" in node.type_name.lower() and 32 <= val <= 126:
+                # 符号转换：如果是有符号类型，且最高位（0x80，即第8位）是1，说明是负数
+                if not is_unsigned and (val & 0x80):
+                    val -= 256
+                
+                # 如果是字符，同时附带 ASCII 显示
+                if "char" in type_str and 32 <= val <= 126:
                     return f"{val} ('{chr(val)}')"
                 return val
 
-            # 2. 处理 2 字节整数
+            # 2. 处理 2 字节整数 (int16_t, uint16_t, short)
             if node.size == 2:
-                return raw_int & 0xFFFF
+                val = raw_int & 0xFFFF
+                # 符号转换：最高位是 0x8000
+                if not is_unsigned and (val & 0x8000):
+                    val -= 65536
+                return val
 
             # 3. 处理浮点数
             if node.type == "float":
-                return round(struct.unpack("<f", struct.pack("<I", raw_int))[0], 4)
+                return struct.unpack("<f", struct.pack("<I", raw_int))[0]
 
-            # 4. 默认返回 4 字节整数
-            return raw_int
+            # 4. 处理 4 字节整数 (int32_t, uint32_t, int)
+            val = raw_int & 0xFFFFFFFF
+            # 符号转换：最高位是 0x80000000
+            if not is_unsigned and (val & 0x80000000):
+                val -= 4294967296
+            return val
+
         except Exception:
             return "ERR"
-   
+
     def write(self, node: VariableNode, val: str) -> bool:
         cmd_type = "mww" if node.size >= 4 else "mwh" if node.size == 2 else "mwb"
         try:
@@ -271,7 +309,13 @@ class ElfExpert:
 
         # --- 2. 处理基础类型 ---
         if die.tag == "DW_TAG_base_type":
-            value_type = "float" if "float" in type_name.lower() else "int"
+            type_lower = type_name.lower()
+            if "float" in type_lower:
+                value_type = "float"
+            elif "double" in type_lower:
+                value_type = "double"  # 新增识别 double
+            else:
+                value_type = "int"
             return VariableNode(name, addr, value_type, current_size, type_name)
 
         # --- 3. 处理枚举类型 ---
@@ -400,6 +444,22 @@ class DebugDataServer:
                 # 字符串单独处理，读完整长度
                 str_val = self.rpc.read_memory_bytes(node.addr, node.size)
                 results.append({"path": path, "value": str_val, "address": hex(node.addr)})
+            
+            # 🔥 核心修复：把 8 字节的整数 (int64/uint64) 和 double 一起拦截下来处理！
+            elif node.type == "double" or (node.type == "int" and node.size == 8):
+                raw_bytes = self.rpc.read_raw_bytes(node.addr, 8) 
+                if len(raw_bytes) == 8:
+                    if node.type == "double":
+                        val = struct.unpack("<d", raw_bytes)[0]
+                    else:
+                        # 判定是否有符号：<Q 是无符号 64 位，<q 是有符号 64 位
+                        is_unsigned = "unsigned" in node.type_name.lower() or "uint" in node.type_name.lower()
+                        fmt = "<Q" if is_unsigned else "<q"
+                        val = struct.unpack(fmt, raw_bytes)[0]
+                else:
+                    val = "ERR"
+                results.append({"path": path, "value": val, "address": hex(node.addr)})
+
             elif node.type != "struct":
                 normal_nodes.append((path, node))
         
